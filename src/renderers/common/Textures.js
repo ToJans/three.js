@@ -139,7 +139,11 @@ class Textures extends DataMap {
 		//
 
 
-		const options = { sampleCount };
+		// `forceRebuild` tells updateTexture this is an internal RT resize / sampleCount
+		// change and the GPU texture should be destroyed + recreated at the new size.
+		// Without this flag, updateTexture treats RT version bumps as no-ops (see its
+		// JSDoc for the user-needsUpdate-is-destructive footgun being avoided).
+		const options = { sampleCount, forceRebuild: textureNeedsUpdate };
 
 		// XR render targets require no texture updates
 
@@ -192,6 +196,14 @@ class Textures extends DataMap {
 	 *
 	 * @param {Texture} texture - The texture to update.
 	 * @param {Object} [options={}] - The options.
+	 * @param {boolean} [options.forceRebuild=false] - For render-target / framebuffer / depth
+	 *   textures only: when true, destroy + recreate the GPU texture (used internally by
+	 *   `updateRenderTarget()` after a size / format / sampleCount change). When false
+	 *   (the default), an external `texture.needsUpdate = true` on an already-initialized
+	 *   RT texture is treated as a no-op for the GPU resource — the recorded version is
+	 *   synced and the function returns. This prevents a footgun where user code calling
+	 *   `rt.texture.needsUpdate = true` would otherwise destroy the GPU resource with no
+	 *   source data to re-upload from, leaving the texture sampling as empty pixels.
 	 */
 	updateTexture( texture, options = {} ) {
 
@@ -203,8 +215,19 @@ class Textures extends DataMap {
 
 		if ( isRenderTarget && textureData.initialized === true ) {
 
-			// it's an update
+			if ( options.forceRebuild !== true ) {
 
+				// External version bump (e.g. `rt.texture.needsUpdate = true` from user code).
+				// RT textures are populated by render passes, not by source uploads — destroying
+				// and recreating here would leave the GPU texture empty with no way to recover.
+				// Just sync the recorded version so subsequent sampler updates see no mismatch.
+				textureData.version = texture.version;
+				return;
+
+			}
+
+			// Internal RT resize / format / sampleCount change — destroy and let the rest of
+			// this function recreate the GPU texture at the new dimensions.
 			backend.destroyTexture( texture );
 
 		}
